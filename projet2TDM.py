@@ -14,11 +14,11 @@ st.set_page_config(
 st.markdown("""
     <style>
     .stApp {
-        background-color: #0e1117;
+        background-color:rgb(18, 4, 38);
         color: white;
     }
     div.stButton > button:first-child {
-        background-color: #FF7F00;
+        background-color:rgb(150, 33, 218);
         color: white;
         border-radius: 8px;
         border: none;
@@ -30,7 +30,7 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-
+video = "/Users/thiagorocha/WCS/ProjetLITE/videos/Video creusema.mp4"
 # --- 2. Chargement des Données ---
 
 @st.cache_data
@@ -81,15 +81,19 @@ def afficher_carte_film(titre, image_url, sous_titre=None, horaire=None):
 # --- 4. Barre Latérale ---
 
 with st.sidebar:
-    st.title("CREUSÉMA")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.title("CREUSÉMA")
     st.header("Navigation")
+    with col2:
+        st.image("/Users/thiagorocha/WCS/ProjetLITE/images/logo_creusema.png", width=50) #LOGO cinema
     page = st.radio(
         "Aller vers",
         ["Accueil", "Presentation", "Recommandations", "Infos Pratiques"],
         label_visibility="collapsed"
     )
     st.markdown("---")
-    st.info(f"📚 {len(df_films)} films disponibles dans la base !")
+    st.markdown("© 2025 Creuséma Cinéma - 2TDM")
 
 # --- 5. Contenu des Pages ---
 
@@ -148,10 +152,7 @@ elif page == "Recommandations":
                 )
 elif page == "Presentation":
     st.title("Video presentation")
-    st.subheader("Quel film avez-vous aimé récemment ?")
-
-    st.video(data, format="video/mp4", loop=False, autoplay=False, muted=False, width="stretch")
-
+    st.video(video, format="video/mp4", loop=False, autoplay=False, muted=False)
 
 elif page == "Infos Pratiques":
     st.title("Nous trouver & Tarifs")
