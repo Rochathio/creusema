@@ -37,7 +37,7 @@ video = "/Users/thiagorocha/WCS/ProjetLITE/videos/Video creusema.mp4"
 def charger_donnees():
     try:
         # Charge le CSV
-        df = pd.read_csv("/Users/thiagorocha/WCS/ProjetLITE/films_final_extended.csv")
+        df = pd.read_csv("https://raw.githubusercontent.com/Rochathio/creusema/refs/heads/main/films_final_extended.csv")
         
         # Filtre pour ne garder que les films qui ont une image (lien_poster non vide)
         df = df.dropna(subset=['lien_poster'])
@@ -52,6 +52,49 @@ def charger_donnees():
 
 # Chargement initial
 df_films = charger_donnees()
+#-----#
+import requests
+import streamlit as st
+
+# --- Configuration TMDB ---
+#-------- API pour le fiml #
+API_KEY = "25d64f0557c373d5bec7a1242553ff40" 
+BASE_API_URL = "https://api.themoviedb.org/3/movie/now_playing"
+IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500" # Taille d'image courante
+
+# --- Fonction de récupération des données ---
+
+def fetch_now_playing_movies():
+    """Récupère la liste des films actuellement en salle depuis TMDB."""
+    params = {
+        'api_key': API_KEY,
+        'language': 'fr-FR' # Demande des titres et résumés en français
+    }
+    
+    if API_KEY == "VOTRE_CLE_API_TMDB":
+        st.warning("Veuillez remplacer 'VOTRE_CLE_API_TMDB' par votre clé API réelle.")
+        return []
+
+    try:
+        response = requests.get(BASE_API_URL, params=params)
+        response.raise_for_status() 
+        data = response.json()
+        return data.get('results', []) 
+    
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erreur de connexion à l'API TMDB : {e}")
+        return []
+
+# --- Fonctions personnalisées (À AJUSTER SI ELLES SONT DÉFINIES AILLEURS) ---
+# NOTE: J'ai inclus une version simple de vos fonctions pour l'exemple.
+def afficher_carte_film(titre, image_url, sous_titre, horaire):
+    """Affiche une carte de film simplifiée (à remplacer par votre propre fonction)."""
+    if image_url:
+        st.image(image_url, caption=titre)
+    else:
+        st.write(f"**{titre}**")
+    st.caption(sous_titre)
+    st.info(f"Séance : {horaire}")
 
 # --- 3. Fonctions Utilitaires ---
 
@@ -97,29 +140,46 @@ with st.sidebar:
 
 # --- 5. Contenu des Pages ---
 
+# Supposons que 'page' est la variable qui contient la page sélectionnée ("Accueil", "Recherche", etc.)
+
 if page == "Accueil":
     st.title("Bienvenue dans votre cinéma Creuséma")
     st.subheader("Actuellement en salle")
     
-    if not df_films.empty:
-        # Sélection aléatoire de 4 films pour l'affiche
-        selection_accueil = df_films.sample(n=4)
+    # 1. Récupérer les films de l'API TMDB
+    movies = fetch_now_playing_movies()
+    
+    if movies:
+        # 2. Sélectionner les 4 premiers films de la liste (pour correspondre à l'affichage précédent)
+        selection_accueil = movies[:4]
         
-        # Horaires fictifs pour l'exemple
+        # Horaires fictifs conservés pour l'exemple
         horaires = ["18h00", "20h30", "21h00", "22h15"]
         
+        # 3. Afficher en colonnes
         cols = st.columns(4)
-        for i, (index, row) in enumerate(selection_accueil.iterrows()):
+        
+        for i, movie in enumerate(selection_accueil):
             with cols[i]:
-                genres = nettoyer_genres(row['genres'])
+                titre = movie.get('title')
+                poster_path = movie.get('poster_path')
+                
+                # Construire l'URL de l'affiche
+                image_url = IMAGE_BASE_URL + poster_path if poster_path else None
+                
+                # Utiliser la date de sortie comme sous-titre (à la place du genre)
+                sous_titre = f"Sortie: {movie.get('release_date', 'N/A')}"
+                horaire = horaires[i]
+                
+                # Appel à votre fonction d'affichage
                 afficher_carte_film(
-                    titre=row['titre'],
-                    image_url=row['lien_poster'],
-                    sous_titre=genres,
-                    horaire=horaires[i]
+                    titre=titre,
+                    image_url=image_url,
+                    sous_titre=sous_titre,
+                    horaire=horaire
                 )
     else:
-        st.warning("Aucune donnée de film chargée.")
+        st.info("Aucun film en cours de diffusion n'a pu être chargé.")
 
 elif page == "Recommandations":
     st.title("Je ne sais pas quoi regarder...")
@@ -133,14 +193,14 @@ elif page == "Recommandations":
             st.success(f"Recherche basée sur '{film_aime}'...")
 
     st.markdown("---")
-    st.header("Voici 3 pépites sélectionnées pour vous :")
+    st.header("Voici 5 pépites sélectionnées pour vous :")
 
     if not df_films.empty:
-        # Sélection aléatoire de 3 films pour les recommandations
+        # Sélection aléatoire de 5 films pour les recommandations
         # (Dans un vrai système, on utiliserait un algorithme de recommandation ici)
-        selection_reco = df_films.sample(n=3)
+        selection_reco = df_films.sample(n=5)
         
-        cols = st.columns(3)
+        cols = st.columns(5)
         for i, (index, row) in enumerate(selection_reco.iterrows()):
             with cols[i]:
                 genres = nettoyer_genres(row['genres'])
