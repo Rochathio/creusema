@@ -1,28 +1,49 @@
 import streamlit as st
 import pandas as pd
+import requests
+import ast 
 import os
-import ast # Pour nettoyer la colonne genres
+from sklearn.neighbors import NearestNeighbors # Import pour la recommandation
 
-# --- 1. Configuration et CSS ---
+# --- 1. Initialisation de l'État et Configuration ---
+
+if 'page' not in st.session_state:
+    st.session_state['page'] = 'Accueil' 
+
 st.set_page_config(
     page_title="CREUSÉMA - Cinéma",
     page_icon="🎬",
     layout="wide"
 )
 
-# CSS Personnalisé
+# Constantes
+VIDEO_URL = "/Users/thiagorocha/WCS/ProjetLITE/videos/Video creusema.mp4"
+LOGO_PATH = "/Users/thiagorocha/WCS/ProjetLITE/images/logo_creusema.png" 
+
+# Configuration API TMDB
+API_KEY = "25d64f0557c373d5bec7a1242553ff40" 
+BASE_API_URL = "https://api.themoviedb.org/3/movie/now_playing"
+IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500" 
+
+# --- CSS Personnalisé ---
 st.markdown("""
     <style>
     .stApp {
         background-color:rgb(18, 4, 38);
         color: white;
     }
-    div.stButton > button:first-child {
-        background-color:rgb(150, 33, 218);
-        color: white;
+    div.stButton > button {
         border-radius: 8px;
         border: none;
         font-weight: bold;
+    }
+    div.stButton > button[data-testid="base-button-secondary"] {
+        background-color: #333345;
+        color: #FFFFFF;
+    }
+    div.stButton > button[data-testid="base-button-primary"] {
+        background-color:rgb(150, 33, 218);
+        color: white;
     }
     div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #262730;
@@ -30,207 +51,250 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-video = "/Users/thiagorocha/WCS/ProjetLITE/videos/Video creusema.mp4"
-# --- 2. Chargement des Données ---
+
+
+# --- 2. Chargement des Données et API ---
 
 @st.cache_data
-def charger_donnees():
+def charger_donnees_csv():
+    """Charge les données depuis le CSV GitHub."""
     try:
-        # Charge le CSV
         df = pd.read_csv("https://raw.githubusercontent.com/Rochathio/creusema/refs/heads/main/films_final_extended.csv")
-        
-        # Filtre pour ne garder que les films qui ont une image (lien_poster non vide)
         df = df.dropna(subset=['lien_poster'])
-        
-        # Optionnel : On peut filtrer pour ne garder que les films récents ou populaires si on veut
-        # df = df[df['annee_sortie'] > 2000] 
-        
+        # On s'assure que les genres sont des strings pour le traitement
+        df['genres'] = df['genres'].astype(str)
         return df
-    except FileNotFoundError:
-        st.error("Le fichier 'films_final_extended.csv' est introuvable. Veuillez le placer dans le même dossier.")
-        return pd.DataFrame() # Retourne un dataframe vide en cas d'erreur
-
-# Chargement initial
-df_films = charger_donnees()
-#-----#
-import requests
-import streamlit as st
-
-# --- Configuration TMDB ---
-#-------- API pour le fiml #
-API_KEY = "25d64f0557c373d5bec7a1242553ff40" 
-BASE_API_URL = "https://api.themoviedb.org/3/movie/now_playing"
-IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500" # Taille d'image courante
-
-# --- Fonction de récupération des données ---
+    except Exception as e:
+        st.error(f"Erreur de chargement du CSV : {e}")
+        return pd.DataFrame()
 
 def fetch_now_playing_movies():
     """Récupère la liste des films actuellement en salle depuis TMDB."""
     params = {
         'api_key': API_KEY,
-        'language': 'fr-FR' # Demande des titres et résumés en français
+        'language': 'fr-FR' 
     }
-    
-    if API_KEY == "VOTRE_CLE_API_TMDB":
-        st.warning("Veuillez remplacer 'VOTRE_CLE_API_TMDB' par votre clé API réelle.")
-        return []
-
     try:
         response = requests.get(BASE_API_URL, params=params)
         response.raise_for_status() 
         data = response.json()
         return data.get('results', []) 
-    
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erreur de connexion à l'API TMDB : {e}")
+    except requests.exceptions.RequestException:
         return []
 
-# --- Fonctions personnalisées (À AJUSTER SI ELLES SONT DÉFINIES AILLEURS) ---
-# NOTE: J'ai inclus une version simple de vos fonctions pour l'exemple.
-def afficher_carte_film(titre, image_url, sous_titre, horaire):
-    """Affiche une carte de film simplifiée (à remplacer par votre propre fonction)."""
-    if image_url:
-        st.image(image_url, caption=titre)
-    else:
-        st.write(f"**{titre}**")
-    st.caption(sous_titre)
-    st.info(f"Séance : {horaire}")
+# Chargement initial des données CSV
+df_films = charger_donnees_csv()
 
-# --- 3. Fonctions Utilitaires ---
+# --- 3. Système de Recommandation (Machine Learning) ---
+
+@st.cache_resource
+def entrainer_modele_recommandation(df):
+    """
+    Prépare la matrice X et entraîne le modèle KNN.
+    Mis en cache pour ne pas recalculer à chaque clic.
+    """
+    if df.empty:
+        return None, None
+
+    # 1. Création de la matrice X (One-Hot Encoding des genres)
+    # Nettoyage : "['Action', 'Comedy']" -> "Action,Comedy"
+    clean_genres = df['genres'].str.replace("['", "").str.replace("']", "").str.replace("', '", ",")
+    
+    # Création des colonnes binaires pour chaque genre
+    X = clean_genres.str.get_dummies(sep=',')
+    
+    # 2. Entraînement du modèle (KNN)
+    # n_neighbors=6 car le résultat inclut le film lui-même (qu'on retirera)
+    model = NearestNeighbors(n_neighbors=6, metric='cosine', algorithm='brute')
+    model.fit(X)
+    
+    return model, X
+
+# Initialisation du modèle
+modele_knn, X_matrix = entrainer_modele_recommandation(df_films)
+
+def recommander_film(nom_du_film, df, model, X):
+    """Fonction qui retourne les films recommandés (Logique du Notebook)."""
+    try:
+        # 1. Trouver l'index du film dans le DataFrame
+        idx = df[df['titre'] == nom_du_film].index[0]
+        
+        # 2. Demander au modèle les voisins
+        distances, indices = model.kneighbors(X.iloc[idx].values.reshape(1, -1))
+        
+        # 3. Récupérer les indices (on ignore le premier [1:] car c'est le film lui-même)
+        indices_voisins = indices[0][1:]
+        
+        # 4. Retourner les films trouvés
+        return df.iloc[indices_voisins]
+        
+    except IndexError:
+        return None # Film pas trouvé
+    except Exception as e:
+        st.error(f"Erreur lors de la recommandation : {e}")
+        return None
+
+# --- 4. Fonctions Utilitaires et d'Affichage ---
+
+def set_page(page_name):
+    st.session_state['page'] = page_name
 
 def nettoyer_genres(genre_str):
-    """Convertit la chaine "['Comedy', 'Drama']" en "Comedy / Drama" """
     try:
-        # Evalue la chaine comme une liste python
         liste = ast.literal_eval(genre_str)
         if isinstance(liste, list):
-            return " / ".join(liste[:2]) # On garde max 2 genres pour l'affichage
+            return " / ".join(liste[:2]) 
         return genre_str
     except:
         return str(genre_str).replace("['", "").replace("']", "").replace("', '", " / ")
 
 def afficher_carte_film(titre, image_url, sous_titre=None, horaire=None):
-    """Affiche une carte de film standardisée avec URL"""
-    
-    # Affiche l'image depuis l'URL du CSV
-    st.image(image_url, use_column_width=True)
+    if image_url:
+        st.image(image_url, width="stretch") # Optimisé pour Streamlit
+    else:
+        st.warning("Pas d'image")
     
     st.markdown(f"**{titre}**")
     if sous_titre:
         st.caption(sous_titre)
     if horaire:
-        st.write(f"🕒 Séance : **{horaire}**")
+        st.info(f"🕒 Séance : {horaire}")
 
-# --- 4. Barre Latérale ---
+# --- 5. Barre Latérale (Navigation) ---
 
 with st.sidebar:
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns([2, 1])
     with col1:
         st.title("CREUSÉMA")
-    st.header("Navigation")
     with col2:
-        st.image("/Users/thiagorocha/WCS/ProjetLITE/images/logo_creusema.png", width=50) #LOGO cinema
-    page = st.radio(
-        "Aller vers",
-        ["Accueil", "Presentation", "Recommandations", "Infos Pratiques"],
-        label_visibility="collapsed"
-    )
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, width=50)
+        else:
+            st.write("🎬")
+
     st.markdown("---")
-    st.markdown("© 2025 Creuséma Cinéma - 2TDM")
+    st.subheader("Navigation")
 
-# --- 5. Contenu des Pages ---
+    PAGES = {
+        "Accueil": "🏠 Accueil",
+        "Presentation": "🎥 Présentation",
+        "Recommandations": "💡 Recommandations",
+        "Infos Pratiques": "🗺️ Infos Pratiques"
+    }
 
-# Supposons que 'page' est la variable qui contient la page sélectionnée ("Accueil", "Recherche", etc.)
+    for page_key, page_label in PAGES.items():
+        is_active = st.session_state['page'] == page_key
+        button_type = "primary" if is_active else "secondary"
+        
+        st.button(
+            page_label, 
+            key=page_key, 
+            type=button_type, 
+            on_click=set_page, 
+            args=[page_key],
+            width="stretch"
+        )
+
+    st.markdown("---")
+    st.caption("© 2025 Creuséma Cinéma - 2TDM")
+
+page = st.session_state['page'] 
+
+# --- 6. Contenu des Pages ---
 
 if page == "Accueil":
     st.title("Bienvenue dans votre cinéma Creuséma")
     st.subheader("Actuellement en salle")
     
-    # 1. Récupérer les films de l'API TMDB
     movies = fetch_now_playing_movies()
     
     if movies:
-        # 2. Sélectionner les 4 premiers films de la liste (pour correspondre à l'affichage précédent)
-        selection_accueil = movies[:4]
-        
-        # Horaires fictifs conservés pour l'exemple
+        selection_accueil = movies[:4] 
         horaires = ["18h00", "20h30", "21h00", "22h15"]
         
-        # 3. Afficher en colonnes
         cols = st.columns(4)
-        
         for i, movie in enumerate(selection_accueil):
             with cols[i]:
                 titre = movie.get('title')
                 poster_path = movie.get('poster_path')
-                
-                # Construire l'URL de l'affiche
                 image_url = IMAGE_BASE_URL + poster_path if poster_path else None
-                
-                # Utiliser la date de sortie comme sous-titre (à la place du genre)
                 sous_titre = f"Sortie: {movie.get('release_date', 'N/A')}"
-                horaire = horaires[i]
                 
-                # Appel à votre fonction d'affichage
-                afficher_carte_film(
-                    titre=titre,
-                    image_url=image_url,
-                    sous_titre=sous_titre,
-                    horaire=horaire
-                )
+                afficher_carte_film(titre, image_url, sous_titre, horaires[i])
     else:
-        st.info("Aucun film en cours de diffusion n'a pu être chargé.")
+        st.info("Impossible de charger les films à l'affiche.")
 
 elif page == "Recommandations":
     st.title("Je ne sais pas quoi regarder...")
     st.subheader("Quel film avez-vous aimé récemment ?")
 
+    # --- Adaptation pour la Recommandation ---
     col_search, col_btn = st.columns([3, 1])
+    
+    # Liste pour le selectbox (évite les fautes de frappe qui cassent le KNN)
+    liste_titres = sorted(df_films['titre'].unique().tolist()) if not df_films.empty else []
+
     with col_search:
-        film_aime = st.text_input("Recherche", placeholder="Ex : Titanic", label_visibility="collapsed")
+        film_choisi = st.selectbox(
+            "Recherche", 
+            options=[""] + liste_titres,
+            label_visibility="collapsed",
+            placeholder="Choisissez un film..."
+        )
+
     with col_btn:
-        if st.button("Trouver mon prochain film", type="primary", use_container_width=True):
-            st.success(f"Recherche basée sur '{film_aime}'...")
+        rechercher = st.button("Trouver mon film", type="primary", width="stretch")
 
     st.markdown("---")
-    st.header("Voici 5 pépites sélectionnées pour vous :")
 
-    if not df_films.empty:
-        # Sélection aléatoire de 5 films pour les recommandations
-        # (Dans un vrai système, on utiliserait un algorithme de recommandation ici)
-        selection_reco = df_films.sample(n=5)
+    if rechercher and film_choisi and not df_films.empty:
+        st.success(f"Recherche de films similaires à : **{film_choisi}**")
         
+        # Appel du modèle KNN
+        resultats = recommander_film(film_choisi, df_films, modele_knn, X_matrix)
+        
+        if resultats is not None and not resultats.empty:
+            st.header("Voici 5 pépites pour vous :")
+            cols = st.columns(5)
+            for i, (index, row) in enumerate(resultats.iterrows()):
+                if i < 5: # Sécurité d'affichage
+                    with cols[i]:
+                        genres = nettoyer_genres(row['genres'])
+                        note = f"⭐ {row['note']}/10"
+                        # Utilise le lien poster du CSV
+                        afficher_carte_film(row['titre'], row['lien_poster'], f"{genres} • {note}")
+        else:
+            st.error("Désolé, nous n'avons pas trouvé de recommandations proches.")
+            
+    elif rechercher and not film_choisi:
+        st.warning("Veuillez sélectionner un film dans la liste.")
+    
+    elif not df_films.empty:
+         # Affichage par défaut (random)
+        st.write("Suggestions aléatoires :")
+        selection_reco = df_films.sample(n=5)
         cols = st.columns(5)
         for i, (index, row) in enumerate(selection_reco.iterrows()):
             with cols[i]:
                 genres = nettoyer_genres(row['genres'])
-                note = f"⭐ {row['note']}/10"
-                afficher_carte_film(
-                    titre=row['titre'],
-                    image_url=row['lien_poster'],
-                    sous_titre=f"{genres} • {note}"
-                )
+                afficher_carte_film(row['titre'], row['lien_poster'], genres)
+
 elif page == "Presentation":
-    st.title("Video presentation")
-    st.video(video, format="video/mp4", loop=False, autoplay=False, muted=False)
+    st.title("Vidéo de présentation")
+    st.video(VIDEO_URL, format="video/mp4")
 
 elif page == "Infos Pratiques":
     st.title("Nous trouver & Tarifs")
-
     col_carte, col_infos = st.columns([2, 1], gap="large")
-
     with col_carte:
-        # Carte par défaut si pas d'image locale
         st.map(data={"lat": [46.237], "lon": [1.486]}, zoom=14)
         st.caption("Rue du Cinéma, 23300 La Souterraine")
-
     with col_infos:
         infos = [
             {"icon": "📍", "titre": "ADRESSE", "desc": "Rue du Cinéma,\n23300 La Souterraine"},
             {"icon": "🎟️", "titre": "TARIFS", "desc": "Plein : **8,00 €**\nRéduit : **6,00 €**"},
             {"icon": "📞", "titre": "CONTACT", "desc": "05 55 55 44 77"}
         ]
-        
         for item in infos:
             with st.container(border=True):
                 st.markdown(f"### {item['icon']} {item['titre']}")
