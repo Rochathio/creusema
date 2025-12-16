@@ -5,30 +5,32 @@ import ast
 import os
 from sklearn.neighbors import NearestNeighbors
 
-# --- 1. Initialisation de l'État et Configuration ---
-
-if 'page' not in st.session_state:
-    st.session_state['page'] = 'Accueil'
-if 'film_selectionne' not in st.session_state:
-    st.session_state['film_selectionne'] = None
-
+# --- 1. Configuration de la Page (Doit être la première commande Streamlit) ---
 st.set_page_config(
     page_title="CREUSÉMA - Cinéma",
     page_icon="🎬",
     layout="wide"
 )
 
-# Constantes
+# --- 2. Initialisation de l'État (Session State) ---
+if 'page' not in st.session_state:
+    st.session_state['page'] = 'Accueil'
+if 'film_selectionne' not in st.session_state:
+    st.session_state['film_selectionne'] = None
+# S'assurer que la clé du selectbox existe pour la navigation
+if 'film_selectbox' not in st.session_state:
+    st.session_state['film_selectbox'] = ""
+
+# --- 3. Constantes et Configuration API ---
 VIDEO_URL = "/Users/thiagorocha/WCS/ProjetLITE/videos/Video creusema.mp4"
 LOGO_PATH = "/Users/thiagorocha/WCS/ProjetLITE/images/logo_creusema.png" 
 
-# Configuration API TMDB
 API_KEY = "25d64f0557c373d5bec7a1242553ff40" 
 BASE_API_URL = "https://api.themoviedb.org/3/movie/now_playing"
 MOVIE_DETAILS_URL = "https://api.themoviedb.org/3/movie"
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500" 
 
-# --- CSS Personnalisé ---
+# --- 4. CSS Personnalisé ---
 st.markdown("""
     <style>
     .stApp {
@@ -161,11 +163,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Chargement des Données et API ---
+# --- 5. Chargement des Données et Fonctions API ---
 
 @st.cache_data
 def charger_donnees_csv():
-    """Charge les données depuis le CSV GitHub."""
+    """Charge les données depuis le CSV GitHub et effectue le nettoyage initial."""
     try:
         df = pd.read_csv("https://raw.githubusercontent.com/Rochathio/creusema/refs/heads/main/films_final_extended.csv")
         df = df.dropna(subset=['lien_poster'])
@@ -192,7 +194,7 @@ def fetch_now_playing_movies():
         return []
 
 def fetch_movie_details(movie_id):
-    """Récupère les détails complets d'un film (description, vidéos, etc.)."""
+    """Récupère les détails complets d'un film via TMDB (description, vidéos)."""
     params = {
         'api_key': API_KEY,
         'language': 'fr-FR',
@@ -205,17 +207,18 @@ def fetch_movie_details(movie_id):
     except requests.exceptions.RequestException:
         return None
 
-# Chargement initial des données CSV
+# Chargement initial des données
 df_films = charger_donnees_csv()
 
-# --- 3. Système de Recommandation (Machine Learning) ---
+# --- 6. Système de Recommandation (Machine Learning) ---
 
 @st.cache_resource
 def entrainer_modele_recommandation(df):
-    """Prépare la matrice X et entraîne le modèle KNN."""
+    """Prépare la matrice de genres et entraîne le modèle KNN."""
     if df.empty:
         return None, None
 
+    # Nettoyage des genres pour le One-Hot Encoding
     clean_genres = df['genres'].str.replace("['", "").str.replace("']", "").str.replace("', '", ",")
     X = clean_genres.str.get_dummies(sep=',')
     
@@ -227,10 +230,11 @@ def entrainer_modele_recommandation(df):
 modele_knn, X_matrix = entrainer_modele_recommandation(df_films)
 
 def recommander_film(nom_du_film, df, model, X):
-    """Fonction qui retourne les films recommandés."""
+    """Retourne les films recommandés basés sur le titre donné."""
     try:
         idx = df[df['titre'] == nom_du_film].index[0]
         distances, indices = model.kneighbors(X.iloc[idx].values.reshape(1, -1))
+        # On exclut le premier résultat car c'est le film lui-même
         indices_voisins = indices[0][1:]
         return df.iloc[indices_voisins]
     except IndexError:
@@ -239,13 +243,17 @@ def recommander_film(nom_du_film, df, model, X):
         st.error(f"Erreur lors de la recommandation : {e}")
         return None
 
-# --- 4. Fonctions Utilitaires et d'Affichage ---
+# --- 7. Fonctions Utilitaires et d'Affichage ---
 
 def set_page(page_name):
+    """Change la page active et réinitialise les états temporaires."""
     st.session_state['page'] = page_name
     st.session_state['film_selectionne'] = None
+    if 'film_selectbox' in st.session_state:
+         st.session_state['film_selectbox'] = "" 
 
 def nettoyer_genres(genre_str):
+    """Nettoie la chaîne de genre pour un affichage lisible."""
     try:
         liste = ast.literal_eval(genre_str)
         if isinstance(liste, list):
@@ -254,8 +262,29 @@ def nettoyer_genres(genre_str):
     except:
         return str(genre_str).replace("['", "").replace("']", "").replace("', '", " / ")
 
+def get_synopsis_safe(row):
+    """Cherche le synopsis dans plusieurs colonnes possibles pour éviter les erreurs."""
+    colonnes_possibles = ['synopsis', 'overview', 'description', 'plot']
+    texte_synopsis = ""
+    
+    for col in colonnes_possibles:
+        if col in row and pd.notna(row[col]):
+            valeur = str(row[col]).strip()
+            if valeur and valeur.lower() != 'nan':
+                texte_synopsis = valeur
+                break
+    return texte_synopsis
+
+def handle_reco_click(title):
+    """
+    Callback function pour mettre à jour les états lorsque l'utilisateur clique
+    sur un film recommandé. Modifie les états dans un contexte sûr.
+    """
+    st.session_state["film_selectbox"] = title
+    st.session_state['film_selectionne'] = title
+
 def afficher_carte_film(titre, image_url, sous_titre=None, horaire=None, movie_id=None, clickable=True):
-    """Affiche une carte de film cliquable."""
+    """Affiche une carte de film simple (utilisé sur l'Accueil)."""
     container = st.container()
     
     with container:
@@ -276,7 +305,7 @@ def afficher_carte_film(titre, image_url, sous_titre=None, horaire=None, movie_i
             st.info(f"🕒 Séance : {horaire}")
 
 def afficher_details_film(movie_id):
-    """Affiche les détails complets d'un film avec description et vidéo."""
+    """Affiche les détails complets d'un film depuis l'API TMDB (utilisé sur l'Accueil)."""
     details = fetch_movie_details(movie_id)
     
     if not details:
@@ -295,14 +324,14 @@ def afficher_details_film(movie_id):
     with col2:
         st.markdown(f'<div class="film-title">{details.get("title", "Titre inconnu")}</div>', unsafe_allow_html=True)
         
-        # Badges d'informations
+        # Badges
         genres = [g['name'] for g in details.get('genres', [])]
         for genre in genres[:3]:
             st.markdown(f'<span class="badge">{genre}</span>', unsafe_allow_html=True)
         
         st.markdown("---")
         
-        # Informations principales
+        # Infos
         st.markdown(f'<div class="film-info">', unsafe_allow_html=True)
         st.markdown(f"**📅 Date de sortie :** {details.get('release_date', 'N/A')}")
         st.markdown(f"**⭐ Note :** {details.get('vote_average', 'N/A')}/10 ({details.get('vote_count', 0)} votes)")
@@ -315,7 +344,7 @@ def afficher_details_film(movie_id):
         st.markdown("### 📖 Synopsis")
         st.markdown(f'<div class="film-info">{details.get("overview", "Pas de synopsis disponible.")}</div>', unsafe_allow_html=True)
     
-    # Vidéos (bandes-annonces)
+    # Vidéo
     videos = details.get('videos', {}).get('results', [])
     trailers = [v for v in videos if v['type'] == 'Trailer' and v['site'] == 'YouTube']
     
@@ -332,7 +361,7 @@ def afficher_details_film(movie_id):
         st.session_state['film_selectionne'] = None
         st.rerun()
 
-# --- 5. Barre Latérale (Navigation) ---
+# --- 8. Barre Latérale (Navigation) ---
 
 with st.sidebar:
     col1, col2 = st.columns([2, 1])
@@ -372,15 +401,19 @@ with st.sidebar:
 
 page = st.session_state['page'] 
 
-# --- 6. Contenu des Pages ---
+# --- 9. Logique des Pages ---
 
 if page == "Accueil":
     st.title("🎬 Bienvenue dans votre cinéma Creuséma")
     
-    # Affichage des détails si un film est sélectionné
-    if st.session_state['film_selectionne']:
+    # Vérification: Sur l'accueil, film_selectionne doit être un ID (int/digit)
+    if st.session_state['film_selectionne'] and isinstance(st.session_state['film_selectionne'], (int, str)) and str(st.session_state['film_selectionne']).isdigit():
         afficher_details_film(st.session_state['film_selectionne'])
     else:
+        # Nettoyage si on vient des recommandations (où c'est un titre)
+        if st.session_state['film_selectionne'] and not str(st.session_state['film_selectionne']).isdigit():
+             st.session_state['film_selectionne'] = None
+
         st.subheader("Actuellement en salle")
         
         movies = fetch_now_playing_movies()
@@ -411,6 +444,7 @@ elif page == "Recommandations":
     liste_titres = sorted(df_films['titre'].unique().tolist()) if not df_films.empty else []
 
     with col_search:
+        # La selectbox est liée à session_state via 'key'
         film_choisi = st.selectbox(
             "Recherche", 
             options=[""] + liste_titres,
@@ -424,118 +458,90 @@ elif page == "Recommandations":
 
     st.markdown("---")
 
-    # Logique de recommandation basée sur le machine learning
-    if rechercher and film_choisi and not df_films.empty:
-        # 1. Afficher le film choisi en évidence
-        film_data = df_films[df_films['titre'] == film_choisi]
-        if not film_data.empty:
-            row = film_data.iloc[0]
-            
-            st.success(f"✨ Vous avez aimé ce film :")
-            
-            st.markdown('<div class="film-details">', unsafe_allow_html=True)
-            
-            col1, col2 = st.columns([1, 3])
-            
-            with col1:
-                st.image(row['lien_poster'], use_container_width=True)
-            
-            with col2:
-                st.markdown(f'<div class="film-title">{row["titre"]}</div>', unsafe_allow_html=True)
-                
-                genres = nettoyer_genres(row['genres'])
-                for genre in genres.split(' / '):
-                    st.markdown(f'<span class="badge">{genre}</span>', unsafe_allow_html=True)
-                
-                st.markdown("---")
-                st.markdown(f"**⭐ Note :** {row['note']}/10")
-                
-                # Affichage du synopsis depuis le CSV
-                if 'synopsis' in row and pd.notna(row['synopsis']) and str(row['synopsis']).strip():
-                    st.markdown("### 📖 Synopsis")
-                    st.markdown(f'<div class="film-info">{row["synopsis"]}</div>', unsafe_allow_html=True)
-                
-                # Affichage de la bande-annonce depuis le CSV
-                if 'lien_trailer' in row and pd.notna(row['lien_trailer']) and str(row['lien_trailer']).strip():
-                    st.markdown("---")
-                    st.markdown("### 🎥 Bande-annonce")
-                    st.video(row['lien_trailer'])
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # 2. Obtenir les recommandations via le modèle ML
-            resultats = recommander_film(film_choisi, df_films, modele_knn, X_matrix)
-            
-            if resultats is not None and not resultats.empty:
-                st.header("🎯 Films recommandés pour vous :")
-                st.caption("Basé sur les genres et similarités avec votre sélection")
-                
-                cols = st.columns(5)
-                for i, (index, row) in enumerate(resultats.iterrows()):
-                    if i < 5:
-                        with cols[i]:
-                            genres = nettoyer_genres(row['genres'])
-                            note = f"⭐ {row['note']}/10"
-                            
-                            # Bouton pour voir les détails
-                            if st.button("📖", key=f"reco_{i}", help=f"Voir {row['titre']}", use_container_width=True):
-                                st.session_state['film_selectionne'] = row['titre']
-                                st.rerun()
-                            
-                            st.image(row['lien_poster'], use_container_width=True)
-                            st.markdown(f"**{row['titre']}**")
-                            st.caption(f"{genres} • {note}")
-            else:
-                st.error("Désolé, nous n'avons pas trouvé de recommandations similaires.")
-                
-    elif rechercher and not film_choisi:
-        st.warning("⚠️ Veuillez sélectionner un film dans la liste.")
+    # Mise à jour du film sélectionné si on clique sur "Rechercher"
+    if rechercher and film_choisi:
+        st.session_state['film_selectionne'] = film_choisi
+
+    # Récupération du film actif
+    current_movie_title = st.session_state.get('film_selectionne')
     
-    # Affichage des détails d'un film recommandé si cliqué
-    elif st.session_state['film_selectionne']:
-        film_data = df_films[df_films['titre'] == st.session_state['film_selectionne']]
-        if not film_data.empty:
-            row = film_data.iloc[0]
+    # Validation
+    is_valid_movie = (
+        current_movie_title 
+        and isinstance(current_movie_title, str) 
+        and not df_films.empty 
+        and current_movie_title in df_films['titre'].values
+    )
+
+    if is_valid_movie:
+        # Affichage du Film Principal
+        row = df_films[df_films['titre'] == current_movie_title].iloc[0]
+        
+        st.success(f"✨ Film sélectionné :")
+        st.markdown('<div class="film-details">', unsafe_allow_html=True)
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            st.image(row['lien_poster'], use_container_width=True)
+        
+        with col2:
+            st.markdown(f'<div class="film-title">{row["titre"]}</div>', unsafe_allow_html=True)
+            genres = nettoyer_genres(row['genres'])
+            for genre in genres.split(' / '):
+                st.markdown(f'<span class="badge">{genre}</span>', unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown(f"**⭐ Note :** {row['note']}/10")
             
-            st.markdown('<div class="film-details">', unsafe_allow_html=True)
+            # Synopsis
+            synopsis = get_synopsis_safe(row)
+            if synopsis:
+                st.markdown("### 📖 Synopsis")
+                st.markdown(f'<div class="film-info">{synopsis}</div>', unsafe_allow_html=True)
             
-            col1, col2 = st.columns([1, 2])
-            
-            with col1:
-                st.image(row['lien_poster'], use_container_width=True)
-            
-            with col2:
-                st.markdown(f'<div class="film-title">{row["titre"]}</div>', unsafe_allow_html=True)
-                
-                genres = nettoyer_genres(row['genres'])
-                for genre in genres.split(' / '):
-                    st.markdown(f'<span class="badge">{genre}</span>', unsafe_allow_html=True)
-                
-                st.markdown("---")
-                st.markdown(f"**⭐ Note :** {row['note']}/10")
-                
-                # Affichage du synopsis depuis le CSV
-                if 'synopsis' in row and pd.notna(row['synopsis']) and str(row['synopsis']).strip():
-                    st.markdown("### 📖 Synopsis")
-                    st.markdown(f'<div class="film-info">{row["synopsis"]}</div>', unsafe_allow_html=True)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Affichage de la bande-annonce en pleine largeur
+            # Vidéo
             if 'lien_trailer' in row and pd.notna(row['lien_trailer']) and str(row['lien_trailer']).strip():
                 st.markdown("---")
                 st.markdown("### 🎥 Bande-annonce")
                 st.video(row['lien_trailer'])
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Calcul des Recommandations
+        resultats = recommander_film(current_movie_title, df_films, modele_knn, X_matrix)
+        
+        if resultats is not None and not resultats.empty:
+            st.header(f"🎯 Films similaires à {current_movie_title} :")
+            st.caption("Cliquez sur un film pour voir ses détails et de nouvelles recommandations.")
             
-            if st.button("← Retour aux recommandations", type="secondary"):
-                st.session_state['film_selectionne'] = None
-                st.rerun()
+            cols = st.columns(5)
+            for i, (index, row_rec) in enumerate(resultats.iterrows()):
+                if i < 5:
+                    with cols[i]:
+                        genres_rec = nettoyer_genres(row_rec['genres'])
+                        note_rec = f"⭐ {row_rec['note']}/10"
+                        
+                        # Bouton de mise à jour dynamique (Utilise le callback pour éviter l'erreur API)
+                        st.button(
+                            "📖", 
+                            key=f"reco_{i}_{row_rec['titre']}", 
+                            help=f"Voir {row_rec['titre']}", 
+                            use_container_width=True,
+                            on_click=handle_reco_click, 
+                            args=[row_rec['titre']]
+                        )
+                        
+                        st.image(row_rec['lien_poster'], use_container_width=True)
+                        st.markdown(f"**{row_rec['titre']}**")
+                        st.caption(f"{genres_rec} • {note_rec}")
+        else:
+            st.error("Pas de recommandations disponibles pour ce film.")
+
+    elif rechercher and not film_choisi:
+        st.warning("⚠️ Veuillez sélectionner un film dans la liste.")
     
-    # Message initial si aucune recherche n'a été effectuée
-    else:
-        st.info("👆 Sélectionnez un film que vous avez aimé pour obtenir des recommandations personnalisées basées sur l'apprentissage automatique.")
+    elif not is_valid_movie:
+        st.info("👆 Sélectionnez un film que vous avez aimé pour obtenir des recommandations personnalisées.")
 
 elif page == "Presentation":
     st.title("🎥 Vidéo de présentation")
